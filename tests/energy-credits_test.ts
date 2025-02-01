@@ -8,63 +8,93 @@ import {
 import { assertEquals } from 'https://deno.land/std@0.90.0/testing/asserts.ts';
 
 Clarinet.test({
-    name: "Ensures owner can create credits",
+    name: "Ensures credit batches can be created and tracked",
     async fn(chain: Chain, accounts: Map<string, Account>) {
         const deployer = accounts.get('deployer')!;
-        const wallet1 = accounts.get('wallet_1')!;
         
         let block = chain.mineBlock([
-            Tx.contractCall('energy-credits', 'create-credits', [
-                types.principal(wallet1.address),
+            Tx.contractCall('energy-credits', 'create-credit-batch', [
+                types.ascii("Solar Farm A"),
                 types.uint(1000)
             ], deployer.address)
         ]);
         
-        block.receipts[0].result.expectOk();
+        block.receipts[0].result.expectOk().expectUint(1);
         
-        let balanceBlock = chain.mineBlock([
-            Tx.contractCall('energy-credits', 'get-credit-balance', [
-                types.principal(wallet1.address)
+        let batchBlock = chain.mineBlock([
+            Tx.contractCall('energy-credits', 'get-credit-batch', [
+                types.uint(1)
             ], deployer.address)
         ]);
         
-        assertEquals(balanceBlock.receipts[0].result.expectOk(), types.uint(1000));
+        let batch = batchBlock.receipts[0].result.expectSome();
+        assertEquals(batch['source'], types.ascii("Solar Farm A"));
+        assertEquals(batch['total-quantity'], types.uint(1000));
     }
 });
 
 Clarinet.test({
-    name: "Ensures credits can be listed and purchased",
+    name: "Ensures credits can be listed with expiration and batch info",
     async fn(chain: Chain, accounts: Map<string, Account>) {
         const deployer = accounts.get('deployer')!;
         const seller = accounts.get('wallet_1')!;
-        const buyer = accounts.get('wallet_2')!;
         
-        // Mint credits for seller
+        // Create batch and mint credits
         chain.mineBlock([
-            Tx.contractCall('energy-credits', 'create-credits', [
-                types.principal(seller.address),
+            Tx.contractCall('energy-credits', 'create-credit-batch', [
+                types.ascii("Solar Farm A"),
                 types.uint(1000)
             ], deployer.address)
         ]);
         
-        // List credits
-        let listBlock = chain.mineBlock([
+        // List credits with expiration and batch
+        let block = chain.mineBlock([
             Tx.contractCall('energy-credits', 'list-credits', [
                 types.uint(100),
-                types.uint(10)
-            ], seller.address)
+                types.uint(10),
+                types.uint(30),
+                types.some(types.uint(1))
+            ], deployer.address)
         ]);
         
-        listBlock.receipts[0].result.expectOk();
+        block.receipts[0].result.expectOk();
+    }
+});
+
+Clarinet.test({
+    name: "Ensures expired listings cannot be purchased",
+    async fn(chain: Chain, accounts: Map<string, Account>) {
+        const deployer = accounts.get('deployer')!;
+        const buyer = accounts.get('wallet_2')!;
         
-        // Buy credits
-        let buyBlock = chain.mineBlock([
+        // Create listing with immediate expiration
+        chain.mineBlock([
+            Tx.contractCall('energy-credits', 'create-credit-batch', [
+                types.ascii("Solar Farm A"),
+                types.uint(1000)
+            ], deployer.address)
+        ]);
+        
+        chain.mineBlock([
+            Tx.contractCall('energy-credits', 'list-credits', [
+                types.uint(100),
+                types.uint(10),
+                types.uint(1),
+                types.some(types.uint(1))
+            ], deployer.address)
+        ]);
+        
+        // Advance chain
+        chain.mineEmptyBlock(10);
+        
+        // Attempt purchase
+        let block = chain.mineBlock([
             Tx.contractCall('energy-credits', 'buy-credits', [
                 types.uint(1),
                 types.uint(50)
             ], buyer.address)
         ]);
         
-        buyBlock.receipts[0].result.expectOk();
+        block.receipts[0].result.expectErr(105);
     }
 });
