@@ -30,6 +30,7 @@ Clarinet.test({
         let batch = batchBlock.receipts[0].result.expectSome();
         assertEquals(batch['source'], types.ascii("Solar Farm A"));
         assertEquals(batch['total-quantity'], types.uint(1000));
+        assertEquals(batch['remaining-quantity'], types.uint(1000));
     }
 });
 
@@ -59,7 +60,7 @@ Clarinet.test({
 });
 
 Clarinet.test({
-    name: "Ensures partial purchases update listings correctly",
+    name: "Ensures partial purchases update listings and batch quantities correctly",
     async fn(chain: Chain, accounts: Map<string, Account>) {
         const deployer = accounts.get('deployer')!;
         const buyer = accounts.get('wallet_2')!;
@@ -97,5 +98,47 @@ Clarinet.test({
         ).result.expectSome();
         
         assertEquals(listing['quantity'], types.uint(50));
+        
+        let batch = chain.callReadOnlyFn(
+            'energy-credits',
+            'get-credit-batch',
+            [types.uint(1)],
+            deployer.address
+        ).result.expectSome();
+        
+        assertEquals(batch['remaining-quantity'], types.uint(950));
+    }
+});
+
+Clarinet.test({
+    name: "Ensures credit transfers work correctly",
+    async fn(chain: Chain, accounts: Map<string, Account>) {
+        const deployer = accounts.get('deployer')!;
+        const recipient = accounts.get('wallet_1')!;
+        
+        chain.mineBlock([
+            Tx.contractCall('energy-credits', 'create-credit-batch', [
+                types.ascii("Solar Farm A"),
+                types.uint(1000)
+            ], deployer.address)
+        ]);
+        
+        let block = chain.mineBlock([
+            Tx.contractCall('energy-credits', 'transfer-credits', [
+                types.uint(100),
+                types.principal(recipient.address)
+            ], deployer.address)
+        ]);
+        
+        block.receipts[0].result.expectOk().expectBool(true);
+        
+        let balance = chain.callReadOnlyFn(
+            'energy-credits',
+            'get-credit-balance',
+            [types.principal(recipient.address)],
+            recipient.address
+        ).result.expectOk();
+        
+        assertEquals(balance, types.uint(100));
     }
 });
