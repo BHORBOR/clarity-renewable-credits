@@ -8,6 +8,7 @@
 (define-constant err-expired (err u105))
 (define-constant err-invalid-batch (err u106))
 (define-constant err-unauthorized (err u107))
+(define-constant err-insufficient-batch-quantity (err u108))
 
 ;; Define credit token
 (define-fungible-token renewable-credit)
@@ -86,7 +87,8 @@
         (> expiration block-height)
         (> price-per-unit u0)
         (match batch-id
-            batch-id (is-some (get-credit-batch batch-id))
+            batch-id (let ((batch (unwrap! (get-credit-batch batch-id) err-invalid-batch)))
+                       (>= (get remaining-quantity batch) quantity))
             true
         ))
         (begin
@@ -105,7 +107,12 @@
         )
         (if (<= price-per-unit u0)
             err-invalid-price
-            err-insufficient-credits)
+            (if (match batch-id
+                    batch-id (let ((batch (unwrap! (get-credit-batch batch-id) err-invalid-batch)))
+                               (< (get remaining-quantity batch) quantity))
+                    false)
+                err-insufficient-batch-quantity
+                err-insufficient-credits))
     ))
 )
 
@@ -129,34 +136,32 @@
         (block-height (get-block-height))
         (listing-quantity (get quantity listing))
     )
-    (if (< block-height (get expiration listing))
-        (if (<= quantity listing-quantity)
-            (begin
-                (try! (stx-transfer? total-price tx-sender seller))
-                (try! (ft-transfer? renewable-credit quantity seller tx-sender))
-                ;; Update batch if applicable
-                (match (get batch-id listing)
-                    batch-id (map-set credit-batches
-                        { batch-id: batch-id }
-                        (merge (unwrap! (get-credit-batch batch-id) err-not-found)
-                            { remaining-quantity: (- (get remaining-quantity (unwrap! (get-credit-batch batch-id) err-not-found)) quantity) }
-                        ))
-                    true
-                )
-                ;; Update or delete listing
-                (if (< quantity listing-quantity)
-                    (map-set credit-listings
-                        { credit-id: credit-id }
-                        (merge listing { quantity: (- listing-quantity quantity) })
-                    )
-                    (map-delete credit-listings { credit-id: credit-id })
-                )
-                (ok true)
-            )
-            err-insufficient-credits
+    (asserts! (< block-height (get expiration listing)) err-expired)
+    (asserts! (<= quantity listing-quantity) err-insufficient-credits)
+    
+    (try! (ft-transfer? renewable-credit quantity seller tx-sender))
+    (try! (stx-transfer? total-price tx-sender seller))
+    
+    ;; Update batch if applicable
+    (match (get batch-id listing)
+        batch-id (map-set credit-batches
+            { batch-id: batch-id }
+            (merge (unwrap! (get-credit-batch batch-id) err-not-found)
+                { remaining-quantity: (- (get remaining-quantity (unwrap! (get-credit-batch batch-id) err-not-found)) quantity) }
+            ))
+        true
+    )
+    
+    ;; Update or delete listing
+    (if (< quantity listing-quantity)
+        (map-set credit-listings
+            { credit-id: credit-id }
+            (merge listing { quantity: (- listing-quantity quantity) })
         )
-        err-expired
-    ))
+        (map-delete credit-listings { credit-id: credit-id })
+    )
+    (ok true)
+    )
 )
 
 (define-public (transfer-credits (amount uint) (recipient principal))
